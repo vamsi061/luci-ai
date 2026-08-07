@@ -86,6 +86,11 @@ export const BrowserAgent: React.FC<BrowserAgentProps> = ({
 
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const loadStartRef = useRef<number>(0);
+  // Guards against re-running the same automation trigger. The effect below
+  // depends on activeTabId / isLocalConnected / ytSearchResults, so unrelated
+  // state changes (navigation, local-sync polls) would otherwise re-execute
+  // the same queued action and send duplicate tool responses to Gemini.
+  const lastTriggerIdRef = useRef<string | null>(null);
 
   // Checks if a website cannot be embedded inside iframe containers due to security policies
   const checkIsRestricted = (urlStr: string): { restricted: boolean; reason: string } => {
@@ -280,7 +285,15 @@ export const BrowserAgent: React.FC<BrowserAgentProps> = ({
 
   // Voice command trigger execution (Direct same-origin DOM browser automation)
   useEffect(() => {
-    if (!actionTrigger) return;
+    if (!actionTrigger) {
+      lastTriggerIdRef.current = null;
+      return;
+    }
+
+    // Each queued trigger must run exactly once, even if this effect re-fires
+    // from unrelated state changes (tab switch, local-sync poll, etc.).
+    if (lastTriggerIdRef.current === actionTrigger.id) return;
+    lastTriggerIdRef.current = actionTrigger.id;
 
     const { type, args, callback } = actionTrigger;
     console.log(`[Luci Browser Hub] Automated Voice Trigger: ${type}`, args);

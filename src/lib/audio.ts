@@ -90,6 +90,13 @@ export class LuciAudioSession {
   private currentState: LiveState = "disconnected";
   private isActivated = false;
 
+  // While a function call is awaiting its tool response, Gemini Live blocks
+  // the turn and terminates the session if further realtime input (mic audio
+  // or screen frames) is streamed. We track that state and suspend streaming
+  // until the tool response has been dispatched.
+  private toolCallPending = false;
+  private toolCallResumeTimer: number | null = null;
+
   constructor(handlers: {
     onStateChange: (state: LiveState) => void;
     onTranscription: (role: "user" | "model", text: string) => void;
@@ -117,7 +124,7 @@ export class LuciAudioSession {
    * Pushes a compressed JPEG base64 screenshot frame directly to the live WebSocket server.
    */
   public sendVideoFrame(base64Data: string) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.currentState !== "disconnected") {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.currentState !== "disconnected" && !this.toolCallPending) {
       this.ws.send(JSON.stringify({ type: "video", video: base64Data }));
     }
   }
@@ -201,6 +208,10 @@ export class LuciAudioSession {
 
           this.micProcessorNode.onaudioprocess = (e) => {
             if (this.currentState === "disconnected" || this.currentState === "connecting") return;
+            // Pause mic frames while a function call awaits its tool response;
+            // streaming audio during that window violates the Live protocol
+            // and causes Gemini to close the session.
+            if (this.toolCallPending) return;
             
             const channelData = e.inputBuffer.getChannelData(0);
             
@@ -282,6 +293,14 @@ export class LuciAudioSession {
           // Handle Tool Calling
           if (data.type === "toolCall") {
             const { callId, name, args } = data;
+
+            // Freeze realtime input until this tool call is answered
+            this.toolCallPending = true;
+            if (this.toolCallResumeTimer) {
+              window.clearTimeout(this.toolCallResumeTimer);
+              this.toolCallResumeTimer = null;
+            }
+
             this.onToolCall(name, args, (result) => {
               // Send back execution result to server bridge
               if (this.ws && this.ws.readyState === WebSocket.OPEN) {
@@ -292,7 +311,21 @@ export class LuciAudioSession {
                   output: result
                 }));
               }
+              // Resume realtime streaming now that the tool response is out
+              this.toolCallPending = false;
+              if (this.toolCallResumeTimer) {
+                window.clearTimeout(this.toolCallResumeTimer);
+                this.toolCallResumeTimer = null;
+              }
             });
+
+            // Safety net: if the tool handler never invokes its callback (e.g.
+            // a browser action crashes), unfreeze the stream so the session
+            // doesn't stay frozen forever.
+            this.toolCallResumeTimer = window.setTimeout(() => {
+              this.toolCallPending = false;
+              this.toolCallResumeTimer = null;
+            }, 15000);
           }
 
         } catch (parseError) {
@@ -391,6 +424,11 @@ export class LuciAudioSession {
   // Fully cleanup and release microphones & connection sockets
   public disconnect() {
     this.isActivated = false;
+    this.toolCallPending = false;
+    if (this.toolCallResumeTimer) {
+      window.clearTimeout(this.toolCallResumeTimer);
+      this.toolCallResumeTimer = null;
+    }
     this.setState("disconnected");
 
     // Close WS socket

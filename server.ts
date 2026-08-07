@@ -481,6 +481,15 @@ async function startServer() {
       let dialogueHistory: { role: string; text: string }[] = [];
       let currentModelResponseText = "";
       
+      // In-flight tool calls awaiting the client's tool response. While any
+      // tool call is pending, Gemini Live blocks the turn, so we must NOT
+      // forward realtime audio/video input to it (that would violate the
+      // protocol and terminate the session).
+      const pendingToolCalls = new Map<string, NodeJS.Timeout>();
+      // Call IDs we have already answered (e.g. via the fallback timer) so a
+      // late client response can never produce a duplicate function response.
+      const respondedToolCalls = new Set<string>();
+      
       const session = await ai.live.connect({
         model: "gemini-3.1-flash-live-preview",
         config: {
@@ -772,13 +781,39 @@ async function startServer() {
                     name: fc.name,
                     args: fc.args
                   }));
+
+                  // Arm a fallback: if the client never reports back (browser
+                  // agent crash, lost message, etc.), auto-respond with an
+                  // error so Gemini can continue instead of closing the session.
+                  pendingToolCalls.set(fc.id, setTimeout(() => {
+                    pendingToolCalls.delete(fc.id);
+                    respondedToolCalls.add(fc.id);
+                    console.warn(`[Tool Call Timeout] No client response for ${fc.name}; sending fallback error response.`);
+                    try {
+                      session.sendToolResponse({
+                        functionResponses: [
+                          {
+                            name: fc.name,
+                            response: { output: { error: "Tool execution timed out before the client could respond." } },
+                            id: fc.id
+                          }
+                        ]
+                      });
+                    } catch (err: any) {
+                      console.error("Fallback tool response failed:", err);
+                    }
+                  }, 20000));
                 }
               }
             }
           },
           onclose: () => {
             console.log("Gemini Live session closed");
-            clientWs.send(JSON.stringify({ type: "status", status: "session_closed" }));
+            try {
+              clientWs.send(JSON.stringify({ type: "status", status: "session_closed" }));
+            } catch (sendErr) {
+              // Client may already be gone
+            }
           }
         }
       });
@@ -788,24 +823,46 @@ async function startServer() {
       clientWs.on("message", (rawMsg) => {
         try {
           const msg = JSON.parse(rawMsg.toString());
-          if (msg.audio) {
+          
+          // While any tool call is pending, drop realtime audio/video input
+          // (the client also pauses it, this is a defensive server guard).
+          const hasPendingTool = pendingToolCalls.size > 0;
+          
+          if (msg.audio && !hasPendingTool) {
             session.sendRealtimeInput({
               audio: { data: msg.audio, mimeType: "audio/pcm;rate=16000" }
             });
-          } else if (msg.type === "video" && msg.video) {
+          } else if (msg.type === "video" && msg.video && !hasPendingTool) {
             session.sendRealtimeInput({
               video: { data: msg.video, mimeType: "image/jpeg" }
             });
           } else if (msg.type === "toolResponse") {
-            session.sendToolResponse({
-              functionResponses: [
-                {
-                  name: msg.name,
-                  response: { output: msg.output },
-                  id: msg.id
-                }
-              ]
-            });
+            // Ignore late responses that arrive after the fallback already
+            // answered (avoids duplicate function responses, a protocol
+            // violation that can kill the session).
+            if (respondedToolCalls.has(msg.id)) {
+              return;
+            }
+            // Clear the pending guard before/after responding
+            const pendingTimer = pendingToolCalls.get(msg.id);
+            if (pendingTimer) {
+              clearTimeout(pendingTimer);
+              pendingToolCalls.delete(msg.id);
+            }
+            respondedToolCalls.add(msg.id);
+            try {
+              session.sendToolResponse({
+                functionResponses: [
+                  {
+                    name: msg.name,
+                    response: { output: msg.output },
+                    id: msg.id
+                  }
+                ]
+              });
+            } catch (toolErr: any) {
+              console.error("Error sending tool response to Gemini:", toolErr.message || toolErr);
+            }
           }
         } catch (e) {
           console.error("Error editing/forwarding client frame message:", e);
@@ -814,6 +871,12 @@ async function startServer() {
       
       clientWs.on("close", () => {
         console.log("Client disconnected, closing Gemini session");
+        // Cancel any pending tool call fallback timers
+        for (const timer of pendingToolCalls.values()) {
+          clearTimeout(timer);
+        }
+        pendingToolCalls.clear();
+        respondedToolCalls.clear();
         try {
           session.close();
         } catch (e) {}
