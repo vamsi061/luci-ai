@@ -1,16 +1,30 @@
 [
   {
-    "id": "ut75a9264",
-    "category": "preference",
-    "text": "The user prefers to speak in Hindi.",
-    "createdAt": "2026-06-12T09:38:55.211Z",
-    "updatedAt": "2026-06-12T09:38:55.211Z"
-  },
-  {
     "id": "xu0boga93",
     "category": "identity",
     "text": "User's name is Vamsi.",
     "createdAt": "2026-08-07T16:56:30.760Z",
     "updatedAt": "2026-08-07T16:56:30.760Z"
+  },
+  {
+    "id": "ey2qhi0le",
+    "category": "goal",
+    "text": "Vamsi asked for help preparing or using a cell phone.",
+    "createdAt": "2026-08-08T07:24:15.202Z",
+    "updatedAt": "2026-08-08T07:24:15.202Z"
+  },
+  {
+    "id": "ylnrcraes",
+    "category": "preference",
+    "text": "Vamsi mentioned their preferred language is Telugu.",
+    "createdAt": "2026-08-08T07:38:55.682Z",
+    "updatedAt": "2026-08-08T07:38:55.682Z"
+  },
+  {
+    "id": "cm2v9nb2d",
+    "category": "preference",
+    "text": "Vamsi changed their preferred language preference from Hindi to Telugu. You must speak only Telugu.",
+    "createdAt": "2026-08-08T07:39:25.890Z",
+    "updatedAt": "2026-08-08T07:39:25.890Z"
   }
 ]

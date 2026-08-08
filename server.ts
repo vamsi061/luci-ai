@@ -898,7 +898,21 @@ async function startServer() {
   // Express Static assets / Vite Dev Middleware configuration
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        // Keep the DISABLE_HMR toggle from vite.config.ts intact.
+        watch:
+          process.env.DISABLE_HMR === "true"
+            ? null
+            : {
+                // memories.json is a runtime data store the server rewrites on
+                // every memory save. Without ignoring it, Vite's file watcher
+                // triggers a full page reload on each write, which kills the
+                // client WebSocket and ends the Gemini Live session
+                // mid-conversation.
+                ignored: ["**/memories.json"],
+              },
+      },
       appType: "spa",
     });
     app.use(vite.middlewares);

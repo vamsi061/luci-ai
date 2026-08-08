@@ -38,6 +38,7 @@ import {
 import { motion, AnimatePresence } from "motion/react";
 import { Memory, MemoryCategory } from "./lib/memoryTypes";
 import { MemoryDashboard } from "./components/MemoryDashboard";
+import { toEmbeddableSearchUrl } from "./lib/urlUtils";
 
 export default function App() {
   const [state, setState] = useState<LiveState>("disconnected");
@@ -426,6 +427,9 @@ export default function App() {
             else if (lower.includes("google")) targetUrl = "https://google.com";
             else targetUrl = `https://${targetUrl}`;
           }
+          // Google search results can't render inside the sandbox proxy (JS-required),
+          // so route them through DuckDuckGo's server-rendered HTML search.
+          targetUrl = toEmbeddableSearchUrl(targetUrl);
           setActiveProjectorUrl(targetUrl);
 
           const triggerItem = {

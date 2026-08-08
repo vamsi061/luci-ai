@@ -25,6 +25,7 @@ import {
   BookOpen
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { toEmbeddableSearchUrl } from "../lib/urlUtils";
 
 interface LogItem {
   id: string;
@@ -92,6 +93,24 @@ export const BrowserAgent: React.FC<BrowserAgentProps> = ({
   // the same queued action and send duplicate tool responses to Gemini.
   const lastTriggerIdRef = useRef<string | null>(null);
 
+  // Restricted sites (X-Frame-Options / CSP) cannot render inside the proxy
+  // iframe. When one is requested we launch it in a real native browser tab —
+  // once per URL per session — and show the explanatory portal. The manual
+  // "RE-LAUNCH NATIVE TAB" button stays as a backup for browsers that block
+  // programmatic popups (e.g. voice-triggered navigation without a gesture).
+  const autoLaunchedRestrictedRef = useRef<Set<string>>(new Set());
+
+  const launchRestrictedNativeTab = (urlStr: string) => {
+    if (!urlStr || urlStr === "about:blank") return;
+    if (autoLaunchedRestrictedRef.current.has(urlStr)) return;
+    autoLaunchedRestrictedRef.current.add(urlStr);
+    try {
+      window.open(urlStr, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      // Popup blockers or sandbox restrictions — the manual button covers it.
+    }
+  };
+
   // Checks if a website cannot be embedded inside iframe containers due to security policies
   const checkIsRestricted = (urlStr: string): { restricted: boolean; reason: string } => {
     if (!urlStr || urlStr === "about:blank") return { restricted: false, reason: "" };
@@ -148,41 +167,45 @@ export const BrowserAgent: React.FC<BrowserAgentProps> = ({
     }
   };
 
-  // Safe tab initialization
+  // Safe tab initialization.
+  // The updater passed to setTabs must stay PURE: React StrictMode double-
+  // invokes updaters in dev, so calling setActiveTabId inside the updater can
+  // commit tabs and activeTabId from different invocations, leaving
+  // activeTabId pointing at a tab that never exists (blank frame, status
+  // stuck on ANALYZING). All side effects run here in the effect body instead.
+  const tabBootstrappedRef = useRef(false);
   useEffect(() => {
-    if (initialUrl) {
-      const startUrl = initialUrl === "about:blank" ? "about:blank" : initialUrl;
+    if (initialUrl && !tabBootstrappedRef.current) {
+      tabBootstrappedRef.current = true;
+      const startUrl = initialUrl === "about:blank" ? "about:blank" : toEmbeddableSearchUrl(initialUrl);
       const restrictions = checkIsRestricted(startUrl);
-      
-      setTabs(prev => {
-        if (prev.length === 0) {
-          const newTab: Tab = {
-            id: Math.random().toString(36).substring(2, 9),
-            url: startUrl,
-            title: getCleanTitleFromUrl(startUrl),
-            history: [startUrl],
-            currentIndex: 0,
-            isLoading: startUrl !== "about:blank" && !restrictions.restricted,
-            openedExternally: restrictions.restricted
-          };
-          setActiveTabId(newTab.id);
-          setInputValue(startUrl === "about:blank" ? "" : startUrl);
+      const newTabId = Math.random().toString(36).substring(2, 9);
+      const newTab: Tab = {
+        id: newTabId,
+        url: startUrl,
+        title: getCleanTitleFromUrl(startUrl),
+        history: [startUrl],
+        currentIndex: 0,
+        isLoading: startUrl !== "about:blank" && !restrictions.restricted,
+        openedExternally: restrictions.restricted
+      };
 
-          if (startUrl !== "about:blank") {
-            loadStartRef.current = Date.now();
-            if (restrictions.restricted) {
-              setDiagnosticStatus("restricted");
-              setDiagnosticReason(restrictions.reason);
-            } else {
-              setDiagnosticStatus("analyzing");
-            }
-          } else {
-            setDiagnosticStatus("blank");
-          }
-          return [newTab];
+      setTabs(prev => (prev.length === 0 ? [newTab] : prev));
+      setActiveTabId(newTabId);
+      setInputValue(startUrl === "about:blank" ? "" : startUrl);
+
+      if (startUrl !== "about:blank") {
+        loadStartRef.current = Date.now();
+        if (restrictions.restricted) {
+          setDiagnosticStatus("restricted");
+          setDiagnosticReason(restrictions.reason);
+          launchRestrictedNativeTab(startUrl);
+        } else {
+          setDiagnosticStatus("analyzing");
         }
-        return prev;
-      });
+      } else {
+        setDiagnosticStatus("blank");
+      }
     }
   }, [initialUrl]);
 
@@ -630,6 +653,11 @@ export const BrowserAgent: React.FC<BrowserAgentProps> = ({
       }
     }
 
+    // Google search results can't render inside the sandbox proxy (Google
+    // requires JS and blocks server-side clients), so transparently route them
+    // through DuckDuckGo's server-rendered HTML search instead.
+    finalUrl = toEmbeddableSearchUrl(finalUrl);
+
     loadStartRef.current = Date.now();
     setDiagnosticStatus("analyzing");
     setDiagnosticReason(null);
@@ -655,6 +683,7 @@ export const BrowserAgent: React.FC<BrowserAgentProps> = ({
     if (restrictions.restricted) {
       setDiagnosticStatus("restricted");
       setDiagnosticReason(restrictions.reason);
+      launchRestrictedNativeTab(finalUrl);
     }
   };
 
@@ -669,6 +698,8 @@ export const BrowserAgent: React.FC<BrowserAgentProps> = ({
   // Spawns a new tab
   const handleNewTab = (initialUrlStr: string = "about:blank") => {
     if (initialUrlStr !== "about:blank") {
+      // New-tab URLs go through the same embeddable-search rewrite.
+      initialUrlStr = toEmbeddableSearchUrl(initialUrlStr);
       const existingTab = tabs.find(t => t.url === initialUrlStr || (t.url.includes("google.com/maps") && initialUrlStr.includes("google.com/maps")));
       if (existingTab) {
         setActiveTabId(existingTab.id);
@@ -679,6 +710,11 @@ export const BrowserAgent: React.FC<BrowserAgentProps> = ({
       }
     }
     const restrictions = checkIsRestricted(initialUrlStr);
+    if (restrictions.restricted) {
+      setDiagnosticStatus("restricted");
+      setDiagnosticReason(restrictions.reason);
+      launchRestrictedNativeTab(initialUrlStr);
+    }
     const newTab: Tab = {
       id: Math.random().toString(36).substring(2, 9),
       url: initialUrlStr,
@@ -1050,7 +1086,7 @@ export const BrowserAgent: React.FC<BrowserAgentProps> = ({
                     </h3>
                     <p className="text-xs font-sans text-slate-400 leading-relaxed max-w-md mx-auto">
                       Luci automatically detected secure sandbox constraints for <span className="font-mono text-indigo-300 font-semibold">{getCleanTitleFromUrl(activeTab?.url || "")}</span>. 
-                      To bypass iframe restrictions and secure your cookies, we loaded this real website in a native browser tab!
+                      To bypass iframe restrictions, this site was launched in your native browser tab. If no tab opened, your browser may have blocked the popup — use the button below.
                     </p>
                   </div>
 
