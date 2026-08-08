@@ -11,10 +11,16 @@
  * 
  * This server binds to port 3001 on localhost, permitting Luci's web portal to issue
  * real-time Playwright actions directly on your physical computer.
+ * 
+ * SESSIONS: The browser uses a PERSISTENT profile stored in
+ * ~/.luci-browser-profile. Log into your sites (GitHub, Google, etc.) once in
+ * Luci's real browser window and the logins are remembered across restarts.
  */
 
 import express from "express";
 import cors from "cors";
+import os from "os";
+import path from "path";
 import { chromium } from "playwright";
 
 const app = express();
@@ -43,22 +49,46 @@ function logAndBroadcast(message, type = "info") {
   lastActionStatus = message;
 }
 
+// Persistent browser profile directory: cookies, logins, and settings are
+// saved here and reused across restarts, so Luci's real browser stays signed
+// in to the accounts you log into once.
+const PROFILE_DIR = path.join(os.homedir(), ".luci-browser-profile");
+
 // Help ensure we have a running browser and active page
 async function ensureBrowser() {
   if (!browser) {
-    logAndBroadcast("Launching real Chromium headed browser...", "info");
-    browser = await chromium.launch({
-      headless: false,
-      args: ["--start-maximized", "--no-sandbox"]
-    });
-    context = await browser.newContext({
-      viewport: null // Uses natural size
-    });
-    page = await context.newPage();
+    logAndBroadcast("Launching real Chromium headed browser (persistent profile)...", "info");
+    logAndBroadcast(`Profile: ${PROFILE_DIR} — log into sites once, sessions persist.`, "info");
+    // launchPersistentContext returns the persistent context itself, which acts
+    // as both the browser and its default context; cookies are written to disk
+    // in PROFILE_DIR so logins survive restarts.
+    try {
+      context = await chromium.launchPersistentContext(PROFILE_DIR, {
+        headless: false,
+        viewport: null, // Uses natural size
+        args: ["--start-maximized", "--no-sandbox"]
+      });
+    } catch (launchErr) {
+      // Common cause: a previous agent instance was killed abruptly, leaving a
+      // Chromium profile lock, or two agent instances are running at once.
+      logAndBroadcast(
+        `Browser launch failed: ${launchErr.message}. If the profile is locked, close other Luci browser windows (or delete the folder ${PROFILE_DIR}) and retry.`,
+        "error"
+      );
+      throw launchErr;
+    }
+    browser = context; // unified reference (persistent context closes like a browser)
+    page = context.pages()[0] || (await context.newPage());
     logAndBroadcast("Real Browser window spawned successfully.", "success");
   } else if (!page || page.isClosed()) {
-    logAndBroadcast("Re-opening closed page tab...", "info");
-    page = await context.newPage();
+    try {
+      logAndBroadcast("Re-opening closed page tab...", "info");
+      page = await context.newPage();
+    } catch (err) {
+      logAndBroadcast("Persistent browser was fully closed; relaunching it...", "info");
+      browser = null;
+      return ensureBrowser();
+    }
   }
 }
 

@@ -105,6 +105,8 @@ node local-agent.js    # listens on http://localhost:3001
 
 Luci automatically detects the agent and prefers it over the embedded browser. (You can also create `local-agent.js` anywhere on your machine from the repo root.)
 
+> 🔑 **Logins persist:** the agent uses a **persistent profile** stored in `~/.luci-browser-profile`. The first time it launches, log into your sites (GitHub, Google, etc.) once in the window that opens — those logins are remembered across restarts, so Luci's real browser stays signed in.
+
 ---
 
 ## 🗣️ Things You Can Say
@@ -178,6 +180,7 @@ Tool calls available to the model: `browserOpen`, `browserSearch`, `browserClick
 - **Browser shows a blank frame / status stuck on `ANALYZING`** — usually a stale page from before the tab-init fix. Hard-refresh the browser with `Cmd/Ctrl + Shift + R`.
 - **Google search results don't render** — Google blocks iframes and server-side fetches, so search URLs are rewritten to DuckDuckGo's HTML engine (which renders real results). This is intentional.
 - **`net::ERR_CONNECTION_REFUSED` on `:3001`** — harmless: that's Luci polling for the optional local Playwright agent, which isn't running. The embedded browser is used instead.
+- **The real browser opens a site but shows a login page** — the local agent keeps its own **persistent profile** (`~/.luci-browser-profile`). Log into the site *once* in Luci's browser window; logins persist afterward. If a previous agent instance was killed abruptly and the profile is locked, close other Luci browser windows or delete that folder and retry.
 - **Browser blocked the auto-open tab** — popup blockers can block Luci from opening restricted sites (especially on voice commands with no click). Use the **RE-LAUNCH NATIVE TAB** button on the portal, or run `local-agent.js`.
 
 ---
